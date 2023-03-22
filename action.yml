@@ -1,0 +1,58 @@
+name: "NPM Publish Version"
+description: "Updates the package version, commits the changes with a tag, and then publishes the package."
+inputs:
+  newversion:
+    description: 'npm version [<newversion> | major | minor | patch | premajor | preminor | prepatch | prerelease | from-git]'
+    required: true
+  preid:
+    description: 'The "prerelease identifier" to use as a prefix for the "prerelease" part of a semver.'
+    required: false
+  github_token:
+    description: 'Github token'
+    required: true
+  npm_token:
+    description: 'NPM token'
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Prepare git
+      run: |
+        git config user.name "${GITHUB_ACTOR}"
+        git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+      shell: bash
+    - name: Bump version
+      run: |
+        npm version ${{ inputs.newversion }} --preid ${{ inputs.preid }} --git-tag-version false
+        if [[ -z $(git ls-remote origin $(jq -r .version < package.json)) ]]; then echo "Created new version $(jq -r .version < package.json)"; else echo "Tag $(jq -r .version < package.json) already exists!" && exit 1 ; fi
+        git checkout -b bump-version-$(jq -r .version < package.json)
+      shell: bash
+    - name: Commit
+      run: "git commit -am \"$(jq -r .version < package.json)\n\nCo-authored-by: github-actions[bot] <github-actions[bot]@users.noreply.github.com>\""
+      shell: bash
+    - name: Push
+      run: git push origin $(git branch --show-current)
+      shell: bash
+    - name: Pull request
+      run: |
+        gh pr merge $(gh pr create --base ${{ github.ref_name }} --fill) --admin --rebase --delete-branch
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+    - name: Tag
+      run: |
+        git checkout ${{ github.ref_name }}
+        git fetch origin ${{ github.ref_name }}
+        git rebase origin/${{ github.ref_name }}
+        git tag v$(jq -r .version < package.json)
+        git push origin v$(jq -r .version < package.json)
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+    - name: Publish to NPM
+      run: |
+        npm ci
+        npm publish --tag $(if [[ $(jq .version < package.json) =~ [0-9]+\.[0-9]+\.[0-9]+\-([^\.]+) ]]; then echo ${BASH_REMATCH[1]}; else echo "latest"; fi) --access public
+      shell: bash
+      env:
+        NODE_AUTH_TOKEN: ${{ inputs.npm_token }}
